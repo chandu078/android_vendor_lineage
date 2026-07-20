@@ -104,7 +104,6 @@
 
 ifneq ($(TARGET_NO_KERNEL),true)
 ifneq ($(TARGET_NO_KERNEL_OVERRIDE),true)
-
 ## Externally influenced variables
 KERNEL_SRC := $(TARGET_KERNEL_SOURCE)
 ifneq ($(BOARD_SYSTEM_KERNEL_MODULES_LOAD),false)
@@ -752,8 +751,10 @@ KERNEL_PATH := $(abspath $(BUILD_TOP)/kernel/platform/kernel-$(TARGET_KERNEL_VER
 $(TARGET_PREBUILT_INT_KERNEL): $(DEPMOD) $(KERNEL_MODULES_PARTITION_FILE_LIST) $(SYSTEM_KERNEL_MODULES_PARTITION_FILE_LIST)
 	@echo "Building $(BOARD_KERNEL_IMAGE_NAME)"
 	@mkdir -p $(KERNEL_OUT)
-	$(hide) cd $(KERNEL_PATH) && python3 $(BUILD_TOP)/.repo/repo/repo manifest -o - -r |sed '/^  <project.*\/>$$/{/kernel\/platform\/kernel-$(TARGET_KERNEL_VERSION)/!d;}' |sed '/^  <project/,/  <\/project>/{/kernel\/platform\/kernel-$(TARGET_KERNEL_VERSION)/!d;}' |sed 's|kernel/platform/kernel-$(TARGET_KERNEL_VERSION)/||' > $(abspath $(KERNEL_OUT))/manifest.xml
+	$(hide) cd $(KERNEL_PATH) && REPO_TRACE=0 python3 $(BUILD_TOP)/.repo/repo/repo manifest -o - -r | python3 -c 'import sys, xml.etree.ElementTree as ET; tree = ET.parse(sys.stdin); root = tree.getroot(); prefix = "kernel/platform/kernel-$(TARGET_KERNEL_VERSION)/"; [root.remove(x) if not x.get("path", "").startswith(prefix) else x.set("path", x.get("path")[len(prefix):]) for x in list(root) if x.tag == "project"]; tree.write(sys.stdout.buffer, encoding="utf-8", xml_declaration=True)' > $(abspath $(KERNEL_OUT))/manifest.xml
 	$(hide) cd $(KERNEL_PATH) && ./tools/bazel --output_user_root=$(abspath $(KERNEL_OUT)/bazel-out) --output_root=$(abspath $(KERNEL_OUT)/bazel-out) run --experimental_convenience_symlinks=ignore --cpu=$(KERNEL_ARCH) --repo_manifest $(abspath $(KERNEL_PATH)):$(abspath $(KERNEL_OUT)/manifest.xml) --config=stamp //$(KERNEL_SRC):$(TARGET_KERNEL_PLATFORM_TARGET)_dist -- --destdir=$(abspath $(KERNEL_OUT))
+	$(hide) python3 -c "import os, shutil; [shutil.copy(os.path.join(r, f), '$(KERNEL_OUT)/') for r, d, fs in os.walk('$(KERNEL_OUT)/bazel-out', followlinks=True) for f in fs if f.endswith('.ko') and 'sandbox' not in r]"
+	$(hide) sed -i '/zram\.ko/d' $(KERNEL_OUT)/system_dlkm.modules.load
 	$(if $(BOOT_KERNEL_MODULES),\
 		$(call build-image-kernel-modules-lineage,$(addprefix $(KERNEL_OUT)/,$(BOOT_KERNEL_MODULES)),$(KERNEL_VENDOR_RAMDISK_MODULES_OUT),,$(KERNEL_VENDOR_RAMDISK_DEPMOD_STAGING_DIR),$(KERNEL_VENDOR_RAMDISK_KERNEL_MODULES_LOAD),,,)\
 	)
@@ -774,10 +775,16 @@ $(INSTALLED_DTBIMAGE_TARGET): $(TARGET_PREBUILT_INT_KERNEL)
 		cat `find $(abspath $(KERNEL_OUT))/$(dir $(dtb)) -maxdepth 1 -type f -name "$(notdir $(dtb)).dtb" | sort` >> $@;)
 endif
 
+ifneq ($(BOARD_PREBUILT_DTBOIMAGE),)
 ifeq ($(BOARD_KERNEL_SEPARATED_DTBO),true)
 MKDTBOIMG := $(HOST_OUT_EXECUTABLES)/mkdtboimg$(HOST_EXECUTABLE_SUFFIX)
 $(BOARD_PREBUILT_DTBOIMAGE): $(TARGET_PREBUILT_INT_KERNEL) $(MKDTBOIMG)
 	$(MKDTBOIMG) create $@ --page_size=$(BOARD_KERNEL_PAGESIZE) $(shell find $(abspath $(KERNEL_OUT))/$(dir $(TARGET_DTBO_LIST_WILDCARD)) -maxdepth 1 -type f -name "$(notdir $(TARGET_DTBO_LIST_WILDCARD)).dtbo" | sort)
+else
+$(BOARD_PREBUILT_DTBOIMAGE): $(TARGET_PREBUILT_INT_KERNEL)
+	$(hide) mkdir -p $(dir $@)
+	$(hide) cp -f $(KERNEL_OUT)/dtbo.img $@
+endif
 endif
 endif
 
