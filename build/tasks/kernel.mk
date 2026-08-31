@@ -774,18 +774,53 @@ $(TARGET_PREBUILT_INT_KERNEL): $(DEPMOD) $(KERNEL_MODULES_PARTITION_FILE_LIST) $
 			--config=stamp \
 			//$(KERNEL_SRC):$(TARGET_KERNEL_PLATFORM_TARGET)_dist \
 			-- --destdir=$(abspath $(KERNEL_OUT))
+	$(hide) cd $(KERNEL_PATH) && \
+		./tools/bazel \
+			--output_user_root=$(abspath $(KERNEL_OUT)/bazel-out) \
+			--output_root=$(abspath $(KERNEL_OUT)/bazel-out) \
+			run \
+			--experimental_convenience_symlinks=ignore \
+			--cpu=$(KERNEL_ARCH) \
+			--repo_manifest $(KERNEL_REPO_MANIFEST) \
+			--config=stamp \
+			//common:kernel_aarch64_lineage_system_dlkm_dist \
+			-- --destdir=$(abspath $(KERNEL_OUT)/lineage-system-dlkm)
+
+ifneq ($(TARGET_KERNEL_COLLISION_MODULES_DIST_TARGET),)
+	$(hide) cd $(KERNEL_PATH) && \
+		./tools/bazel \
+			--output_user_root=$(abspath $(KERNEL_OUT)/bazel-out) \
+			--output_root=$(abspath $(KERNEL_OUT)/bazel-out) \
+			run \
+			--experimental_convenience_symlinks=ignore \
+			--cpu=$(KERNEL_ARCH) \
+			--repo_manifest $(KERNEL_REPO_MANIFEST) \
+			--config=stamp \
+			$(TARGET_KERNEL_COLLISION_MODULES_DIST_TARGET) \
+			-- --destdir=$(abspath $(KERNEL_OUT)/$(TARGET_KERNEL_COLLISION_MODULES_OUT_DIR))
+endif
+
 	$(if $(BOOT_KERNEL_MODULES),\
-		$(call build-image-kernel-modules-lineage,$(addprefix $(KERNEL_OUT)/,$(BOOT_KERNEL_MODULES)),$(KERNEL_VENDOR_RAMDISK_MODULES_OUT),,$(KERNEL_VENDOR_RAMDISK_DEPMOD_STAGING_DIR),$(KERNEL_VENDOR_RAMDISK_KERNEL_MODULES_LOAD),,,)\
+		boot_kernel_modules="$(BOOT_KERNEL_MODULES)"; \
+		$(if $(filter true,$(TARGET_AUTO_COLLECT_KERNEL_MODULE_DEPS)),\
+			module_deps_dir="$(KERNEL_OUT)/.lineage-module-deps"; \
+			rm -rf "$$module_deps_dir"; \
+			mkdir -p "$$module_deps_dir"; \
+			for m in $(KERNEL_OUT)/*.ko; do ln -sf "$$(realpath "$$m")" "$$module_deps_dir/"; done; \
+			boot_kernel_modules_deps=$$($(COLLECT_MODULE_DEPS_CMD) "$$module_deps_dir" $(BOOT_KERNEL_MODULES) | tr '\n' ' '); \
+			boot_kernel_modules="$$boot_kernel_modules $$boot_kernel_modules_deps"; \
+		) \
+		($(call build-image-kernel-modules-lineage,$$(printf '%s\n' $$boot_kernel_modules | sort -u | awk -v k="$(KERNEL_OUT)" '{ if (index(" $(TARGET_KERNEL_COLLISION_MODULES) ", " " $$0 == " ")) print k "/$(TARGET_KERNEL_COLLISION_MODULES_OUT_DIR)/" $$0; else print k "/" $$0 }'),$(KERNEL_VENDOR_RAMDISK_MODULES_OUT),,$(KERNEL_VENDOR_RAMDISK_DEPMOD_STAGING_DIR),$(KERNEL_VENDOR_RAMDISK_KERNEL_MODULES_LOAD),,,,true)) || exit "$$?"; \
 	)
 	$(if $(RECOVERY_KERNEL_MODULES),\
-		$(call build-image-kernel-modules-lineage,$(addprefix $(KERNEL_OUT)/,$(RECOVERY_KERNEL_MODULES)),$(KERNEL_RECOVERY_MODULES_OUT),,$(KERNEL_RECOVERY_DEPMOD_STAGING_DIR),$(BOARD_RECOVERY_KERNEL_MODULES_LOAD),,,)\
+		$(call build-image-kernel-modules-lineage,$(foreach m,$(RECOVERY_KERNEL_MODULES),$(if $(filter $(TARGET_KERNEL_COLLISION_MODULES),$(m)),$(KERNEL_OUT)/$(TARGET_KERNEL_COLLISION_MODULES_OUT_DIR)/$(m),$(KERNEL_OUT)/$(m))),$(KERNEL_RECOVERY_MODULES_OUT),,$(KERNEL_RECOVERY_DEPMOD_STAGING_DIR),$(BOARD_RECOVERY_KERNEL_MODULES_LOAD),,,,true)\
 	)
 	$(if $(filter $(TARGET_KERNEL_MIXED_MODE),true),\
-		system_dlkm_modules=$$(awk -F'/' '{ print "$(KERNEL_OUT)/"$$NF }' $(KERNEL_OUT)/system_dlkm.modules.load); \
+		system_dlkm_modules=$$(awk -F'/' '{ print "$(KERNEL_OUT)/lineage-system-dlkm/"$$NF }' $(KERNEL_OUT)/system_dlkm.modules.load); \
 		($(call build-image-kernel-modules-lineage,$$system_dlkm_modules,$(SYSTEM_KERNEL_MODULES_OUT),$(SYSTEM_KERNEL_MODULE_MOUNTPOINT)/,$(SYSTEM_KERNEL_DEPMOD_STAGING_DIR),,,$(SYSTEM_KERNEL_MODULES_PARTITION_FILE_LIST),))\
 	)
-	vendor_modules=$$(comm -23 <(find $(KERNEL_OUT) -maxdepth 1 -type f -name '*.ko' | awk -F'/' '{ print $$NF }' | sort) <(awk -F'/' '{ print $$NF }' $(KERNEL_OUT)/system_dlkm.modules.load | sort) | sed 's|^|$(KERNEL_OUT)/|'); \
-	($(call build-image-kernel-modules-lineage,$$vendor_modules,$(KERNEL_MODULES_OUT),$(KERNEL_MODULE_MOUNTPOINT)/,$(KERNEL_DEPMOD_STAGING_DIR),$(BOARD_VENDOR_KERNEL_MODULES_LOAD),,$(KERNEL_MODULES_PARTITION_FILE_LIST),$(SYSTEM_KERNEL_DEPMOD_STAGING_DIR)/lib/modules/0.0/$(SYSTEM_KERNEL_MODULE_MOUNTPOINT)))
+	vendor_modules=$$(comm -23 <(find $(KERNEL_OUT) -maxdepth 1 -type f -name '*.ko' | awk -F'/' '{ print $$NF }' | sort) <(awk -F'/' '{ print $$NF }' $(KERNEL_OUT)/system_dlkm.modules.load | sort) | sed 's|^|$(KERNEL_OUT)/|'); vendor_modules="$$vendor_modules $(foreach m,$(TARGET_KERNEL_COLLISION_MODULES),$(KERNEL_OUT)/$(TARGET_KERNEL_COLLISION_MODULES_OUT_DIR)/$(m))"; \
+	($(call build-image-kernel-modules-lineage,$$vendor_modules,$(KERNEL_MODULES_OUT),$(KERNEL_MODULE_MOUNTPOINT)/,$(KERNEL_DEPMOD_STAGING_DIR),$(BOARD_VENDOR_KERNEL_MODULES_LOAD),,$(KERNEL_MODULES_PARTITION_FILE_LIST),$(SYSTEM_KERNEL_DEPMOD_STAGING_DIR)/lib/modules/0.0/$(SYSTEM_KERNEL_MODULE_MOUNTPOINT),true))
 
 ifeq ($(BOARD_INCLUDE_DTB_IN_BOOTIMG),true)
 $(INSTALLED_DTBIMAGE_TARGET): $(TARGET_PREBUILT_INT_KERNEL)
